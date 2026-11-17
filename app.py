@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta
 from scipy.signal import butter, filtfilt, stft
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -264,6 +263,31 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
+    col_auto_t, col_val_t = st.columns([1, 4])
+    with col_auto_t:
+        auto_escala_t = st.checkbox("Auto-escala Y (Ondas)", value=False)
+    with col_val_t:
+        if "dB" in unidad:
+            rango_db_t = st.slider(
+                "Rango vertical de Magnitud en tiempo (dB):",
+                min_value=-100.0, max_value=40.0, value=(-60.0, 20.0), step=5.0,
+                disabled=auto_escala_t
+            )
+            rango_y_tiempo = list(rango_db_t) if not auto_escala_t else None
+        else:
+            defecto_t = 0.5 * factor_unidad
+            max_slider_t = 15.0 * factor_unidad
+            paso_t = 0.05 * factor_unidad
+            limite_y_t = st.slider(
+                f"Amplitud máxima fija en tiempo (± {etiqueta_y}):",
+                min_value=paso_t,
+                max_value=max_slider_t,
+                value=defecto_t,
+                step=paso_t,
+                disabled=auto_escala_t
+            )
+            rango_y_tiempo = [-limite_y_t, limite_y_t] if not auto_escala_t else None
+
     fig_tiempo = make_subplots(
         rows=3, cols=1, shared_xaxes=True,
         subplot_titles=("Eje X (Horizontal)", "Eje Y (Horizontal)", "Eje Z (Vertical / Inclinado)"),
@@ -279,7 +303,7 @@ with tab1:
         fig_tiempo.update_traces(y=np.abs(ay_vis) + 1e-5, row=2, col=1)
         fig_tiempo.update_traces(y=np.abs(az_vis) + 1e-5, row=3, col=1)
 
-    fig_tiempo.update_yaxes(title_text=etiqueta_y, type=tipo_eje_y)
+    fig_tiempo.update_yaxes(title_text=etiqueta_y, type=tipo_eje_y, range=rango_y_tiempo)
     fig_tiempo.update_xaxes(title_text="Tiempo (s)", row=3, col=1)
     fig_tiempo.update_layout(
         height=620, showlegend=False, margin=dict(t=40, b=30),
@@ -296,6 +320,62 @@ with tab2:
     escala_fz = 20 * np.log10(fz + 1e-6) if "dB" in unidad else fz * factor_unidad
     y_fft_label = "Magnitud (dB)" if "dB" in unidad else f"Amplitud ({etiqueta_y})"
 
+    # --- ESCALA VERTICAL FIJA POR DEFECTO (SIN AUTOESCALA DINÁMICA) ---
+    col_auto, col_num, col_slider_y = st.columns([1.1, 1.3, 3.6])
+    with col_auto:
+        auto_escala_y = st.checkbox("Auto-escala Y", value=False)
+
+    if "dB" in unidad:
+        with col_num:
+            min_db = st.number_input("Mín (dB)", value=-100.0, step=5.0, disabled=auto_escala_y)
+        with col_slider_y:
+            max_db = st.slider(
+                "Tope máximo fijo (dB):",
+                min_value=-60.0, max_value=40.0, value=10.0, step=5.0,
+                disabled=auto_escala_y
+            )
+        rango_y_config = [min_db, max_db] if not auto_escala_y else None
+    else:
+        max_fijo_global = 0.50 * factor_unidad
+        paso_fijo = 0.005 * factor_unidad
+        defecto_fijo = 0.05 * factor_unidad  # fijo en 0.05 m/s² (o 5.0 Gal)
+
+        if "tope_y_fft_base" not in st.session_state:
+            st.session_state["tope_y_fft_base"] = 0.05
+
+        def actualizar_desde_num():
+            st.session_state["tope_y_fft_base"] = st.session_state["num_y_fft"] / factor_unidad
+
+        def actualizar_desde_slider():
+            st.session_state["tope_y_fft_base"] = st.session_state["slider_y_fft"] / factor_unidad
+
+        valor_actual = min(max(st.session_state["tope_y_fft_base"] * factor_unidad, paso_fijo), max_fijo_global)
+
+        with col_num:
+            limite_y = st.number_input(
+                f"Tope exacto ({etiqueta_y}):",
+                min_value=paso_fijo,
+                max_value=max_fijo_global,
+                value=valor_actual,
+                step=paso_fijo,
+                format="%.4f" if factor_unidad == 1.0 else "%.2f",
+                key="num_y_fft",
+                on_change=actualizar_desde_num,
+                disabled=auto_escala_y
+            )
+        with col_slider_y:
+            st.slider(
+                f"Escala vertical fija de Amplitud ({etiqueta_y}):",
+                min_value=paso_fijo,
+                max_value=max_fijo_global,
+                value=valor_actual,
+                step=paso_fijo,
+                key="slider_y_fft",
+                on_change=actualizar_desde_slider,
+                disabled=auto_escala_y
+            )
+        rango_y_config = [0.0, limite_y] if not auto_escala_y else None
+
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fft, name="Resultante Espectral √(|X|²+|Y|²+|Z|²)", line=dict(color=COLOR_RESULTANTE, width=2.5)))
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fx, name="Eje X", line=dict(color="#1f77b4", width=1, dash="dot")))
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fy, name="Eje Y", line=dict(color="#2ca02c", width=1, dash="dot")))
@@ -311,6 +391,7 @@ with tab2:
         xaxis_title="Frecuencia (Hz)",
         yaxis_title=y_fft_label,
         xaxis=dict(range=[0, min(25, fs_real / 2)]),
+        yaxis=dict(range=rango_y_config) if rango_y_config else {},
         height=480,
         template=PLOTLY_TEMPLATE,
         paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
