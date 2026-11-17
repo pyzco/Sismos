@@ -358,19 +358,19 @@ with tab2:
     escala_fz = 20 * np.log10(fz + 1e-6) if "dB" in unidad else fz * factor_unidad
     y_fft_label = "Magnitud (dB)" if "dB" in unidad else f"Amplitud ({etiqueta_y})"
 
-    # --- ESCALA VERTICAL FIJA POR DEFECTO (SIN AUTOESCALA DINÁMICA) ---
+    # --- ESCALA VERTICAL FIJA PARA GRÁFICO 1 (AMPLITUD VS FRECUENCIA) ---
     col_auto, col_num, col_slider_y = st.columns([1.1, 1.3, 3.6])
     with col_auto:
-        auto_escala_y = st.checkbox("Auto-escala Y", value=False)
+        auto_escala_y = st.checkbox("Auto-escala Y", value=False, key="auto_y_freq")
 
     if "dB" in unidad:
         with col_num:
-            min_db = st.number_input("Mín (dB)", value=-100.0, step=5.0, disabled=auto_escala_y)
+            min_db = st.number_input("Mín (dB)", value=-100.0, step=5.0, disabled=auto_escala_y, key="min_db_freq")
         with col_slider_y:
             max_db = st.slider(
                 "Tope máximo fijo (dB):",
                 min_value=-60.0, max_value=40.0, value=10.0, step=5.0,
-                disabled=auto_escala_y
+                disabled=auto_escala_y, key="max_db_freq"
             )
         rango_y_config = [min_db, max_db] if not auto_escala_y else None
     else:
@@ -456,6 +456,61 @@ with tab2:
     with col_umbral:
         mostrar_umbral = st.checkbox("Mostrar línea de umbral (0.03 m/s²)", value=True)
 
+    # --- ESCALA VERTICAL PROPIA PARA GRÁFICO 2 (AMPLITUD VS TIEMPO) ---
+    col_auto_2, col_num_2, col_slider_2 = st.columns([1.1, 1.3, 3.6])
+    with col_auto_2:
+        auto_escala_y2 = st.checkbox("Auto-escala Y", value=False, key="auto_y_tiempo_fft")
+
+    if "dB" in unidad:
+        with col_num_2:
+            min_db_2 = st.number_input("Mín (dB)", value=-100.0, step=5.0, disabled=auto_escala_y2, key="min_db_tfft")
+        with col_slider_2:
+            max_db_2 = st.slider(
+                "Tope máximo fijo (dB):",
+                min_value=-60.0, max_value=40.0, value=10.0, step=5.0,
+                disabled=auto_escala_y2, key="max_db_tfft"
+            )
+        rango_y2_config = [min_db_2, max_db_2] if not auto_escala_y2 else None
+    else:
+        max_fijo_2 = 1.00 * factor_unidad
+        paso_fijo_2 = 0.005 * factor_unidad
+
+        if "tope_y_tfft_base" not in st.session_state:
+            st.session_state["tope_y_tfft_base"] = 0.10
+
+        def actualizar_tfft_desde_num():
+            st.session_state["tope_y_tfft_base"] = st.session_state["num_y_tfft"] / factor_unidad
+
+        def actualizar_tfft_desde_slider():
+            st.session_state["tope_y_tfft_base"] = st.session_state["slider_y_tfft"] / factor_unidad
+
+        valor_actual_2 = min(max(st.session_state["tope_y_tfft_base"] * factor_unidad, paso_fijo_2), max_fijo_2)
+
+        with col_num_2:
+            limite_y2 = st.number_input(
+                f"Tope exacto ({etiqueta_y}):",
+                min_value=paso_fijo_2,
+                max_value=max_fijo_2,
+                value=valor_actual_2,
+                step=paso_fijo_2,
+                format="%.4f" if factor_unidad == 1.0 else "%.2f",
+                key="num_y_tfft",
+                on_change=actualizar_tfft_desde_num,
+                disabled=auto_escala_y2
+            )
+        with col_slider_2:
+            st.slider(
+                f"Escala vertical fija de Amplitud vs. Tiempo ({etiqueta_y}):",
+                min_value=paso_fijo_2,
+                max_value=max_fijo_2,
+                value=valor_actual_2,
+                step=paso_fijo_2,
+                key="slider_y_tfft",
+                on_change=actualizar_tfft_desde_slider,
+                disabled=auto_escala_y2
+            )
+        rango_y2_config = [0.0, limite_y2] if not auto_escala_y2 else None
+
     t_win, sx_t, sy_t, sz_t, stotal_t = calcular_amplitud_espectral_tiempo(
         ax_din, ay_din, az_din, fs_real, ventana_fft_seg, banda_sismica
     )
@@ -499,7 +554,7 @@ with tab2:
         title=f"Amplitud Espectral Máxima en Banda {banda_sismica[0]}–{banda_sismica[1]} Hz vs. Tiempo (Ventana: {ventana_fft_seg:.1f} s)",
         xaxis_title="Tiempo (s)",
         yaxis_title=y_fft_label,
-        yaxis=dict(range=rango_y_config) if rango_y_config else {},
+        yaxis=dict(range=rango_y2_config) if rango_y2_config else {},
         height=440,
         template=PLOTLY_TEMPLATE,
         paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
