@@ -144,6 +144,7 @@ saltos = np.diff(df["seq"].values)
 perdidas = int(np.sum(saltos[saltos > 1] - 1))
 integridad = (len(df) / (len(df) + perdidas)) * 100.0
 
+# --- SELECTOR DE INTERVALO TEMPORAL (SEGUNDOS Y HH:MM:SS SINCRONIZADOS) ---
 st.subheader("Selección de Intervalo Temporal")
 duracion_total = max(float(t_seg_total[-1]), 0.1)
 max_seg_entero = max(int(np.ceil(duracion_total)), 1)
@@ -152,27 +153,36 @@ opciones_hms = [formatear_hms(s) for s in range(max_seg_entero + 1)]
 indice_a_hms = {s: opciones_hms[s] for s in range(max_seg_entero + 1)}
 hms_a_indice = {opciones_hms[s]: s for s in range(max_seg_entero + 1)}
 
-if st.session_state.get("archivo_actual") != archivo.name:
+if (
+    st.session_state.get("archivo_actual") != archivo.name
+    or not isinstance(st.session_state.get("rango_seg"), tuple)
+    or not isinstance(st.session_state.get("rango_hms"), tuple)
+):
     st.session_state["archivo_actual"] = archivo.name
     st.session_state["rango_seg"] = (0.0, duracion_total)
     st.session_state["rango_hms"] = (opciones_hms[0], opciones_hms[-1])
 
 def sincronizar_desde_segundos():
-    ini, fin = st.session_state["rango_seg"]
-    idx_ini = min(max(int(round(ini)), 0), max_seg_entero)
-    idx_fin = min(max(int(round(fin)), 0), max_seg_entero)
-    st.session_state["rango_hms"] = (indice_a_hms[idx_ini], indice_a_hms[idx_fin])
+    val = st.session_state.get("rango_seg", (0.0, duracion_total))
+    if isinstance(val, (tuple, list)) and len(val) == 2:
+        ini, fin = val
+        idx_ini = min(max(int(round(ini)), 0), max_seg_entero)
+        idx_fin = min(max(int(round(fin)), 0), max_seg_entero)
+        st.session_state["rango_hms"] = (indice_a_hms[idx_ini], indice_a_hms[idx_fin])
 
 def sincronizar_desde_hms():
-    hms_ini, hms_fin = st.session_state["rango_hms"]
-    ini = min(float(hms_a_indice[hms_ini]), duracion_total)
-    fin = min(float(hms_a_indice[hms_fin]), duracion_total)
-    st.session_state["rango_seg"] = (ini, fin)
+    val = st.session_state.get("rango_hms", (opciones_hms[0], opciones_hms[-1]))
+    if isinstance(val, (tuple, list)) and len(val) == 2:
+        hms_ini, hms_fin = val
+        ini = min(float(hms_a_indice.get(hms_ini, 0)), duracion_total)
+        fin = min(float(hms_a_indice.get(hms_fin, max_seg_entero)), duracion_total)
+        st.session_state["rango_seg"] = (ini, fin)
 
 rango_t = st.slider(
     "Rango de tiempo en segundos desde el inicio:",
     min_value=0.0,
     max_value=duracion_total,
+    value=st.session_state["rango_seg"],
     step=0.1,
     key="rango_seg",
     on_change=sincronizar_desde_segundos
@@ -181,6 +191,7 @@ rango_t = st.slider(
 rango_hms = st.select_slider(
     "Rango de tiempo en formato Horas:Minutos:Segundos (HH:MM:SS):",
     options=opciones_hms,
+    value=st.session_state["rango_hms"],
     key="rango_hms",
     on_change=sincronizar_desde_hms
 )
