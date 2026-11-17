@@ -40,22 +40,41 @@ else:
 st.markdown(
     f"""
     <style>
-    .stApp {{
-        background-color: {COLOR_FONDO};
-        color: {COLOR_TEXTO};
+    /* Fondo real de la app: estas son las capas que Streamlit pinta encima de .stApp */
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"],
+    [data-testid="stMain"] {{
+        background-color: {COLOR_FONDO} !important;
     }}
+
+    /* Texto: forzado en TODO el contenido principal y el sidebar, */
+    /* porque Streamlit asigna su propio color oscuro a labels, markdown, tabs, etc. */
+    [data-testid="stAppViewContainer"], [data-testid="stAppViewContainer"] *,
+    [data-testid="stSidebar"], [data-testid="stSidebar"] * {{
+        color: {COLOR_TEXTO} !important;
+    }}
+
     [data-testid="stSidebar"] {{
-        background-color: {COLOR_TARJETA};
+        background-color: {COLOR_TARJETA} !important;
         border-right: 1px solid {COLOR_BORDE};
     }}
+
     [data-testid="stMetric"] {{
-        background-color: {COLOR_TARJETA};
+        background-color: {COLOR_TARJETA} !important;
         border: 1px solid {COLOR_BORDE};
         padding: 12px;
         border-radius: 10px;
     }}
-    [data-testid="stMetricLabel"], [data-testid="stMetricValue"], [data-testid="stMetricDelta"] {{
-        color: {COLOR_TEXTO} !important;
+
+    [data-testid="stFileUploaderDropzone"],
+    [data-testid="stFileUploaderFile"] {{
+        background-color: {COLOR_TARJETA} !important;
+        border: 1px solid {COLOR_BORDE} !important;
+    }}
+
+    [data-baseweb="tab-list"] {{
+        background-color: transparent !important;
     }}
     </style>
     """,
