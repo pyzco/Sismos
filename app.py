@@ -193,6 +193,34 @@ with tab2:
     escala_fz = 20 * np.log10(fz + 1e-6) if "dB" in unidad else fz * factor_unidad
     y_fft_label = "Magnitud (dB)" if "dB" in unidad else f"Amplitud ({etiqueta_y})"
 
+    # --- DESLIZANTE DE ESCALA VERTICAL (AMPLITUD) ---
+    col_auto, col_slider_y = st.columns([1, 4])
+    with col_auto:
+        auto_escala_y = st.checkbox("Auto-escala Y", value=True)
+    with col_slider_y:
+        if "dB" in unidad:
+            rango_db = st.slider(
+                "Rango vertical de Magnitud (dB):",
+                min_value=-120.0, max_value=40.0, value=(-100.0, 10.0), step=5.0,
+                disabled=auto_escala_y
+            )
+            rango_y_config = list(rango_db) if not auto_escala_y else None
+        else:
+            max_actual = float(np.max(escala_fft)) if len(escala_fft) > 0 else 0.05
+            techo_slider = max(round(max_actual * 2.5, 4), 0.01 * factor_unidad)
+            paso_slider = round(techo_slider / 200.0, 5)
+            valor_defecto = max(round(max_actual * 1.15, 4), paso_slider)
+
+            limite_y = st.slider(
+                f"Tope máximo de Amplitud ({etiqueta_y}):",
+                min_value=paso_slider,
+                max_value=techo_slider,
+                value=min(valor_defecto, techo_slider),
+                step=paso_slider,
+                disabled=auto_escala_y
+            )
+            rango_y_config = [0.0, limite_y] if not auto_escala_y else None
+
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fft, name="Resultante Espectral √(|X|²+|Y|²+|Z|²)", line=dict(color="#FFD700", width=2.5)))
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fx, name="Eje X", line=dict(color="#38bdf8", width=1, dash="dot"), opacity=0.75))
     fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fy, name="Eje Y", line=dict(color="#4ade80", width=1, dash="dot"), opacity=0.75))
@@ -208,6 +236,7 @@ with tab2:
         xaxis_title="Frecuencia (Hz)",
         yaxis_title=y_fft_label,
         xaxis=dict(range=[0, min(25, fs_real / 2)]),
+        yaxis=dict(range=rango_y_config) if rango_y_config else {},
         height=480
     )
     st.plotly_chart(fig_fft, use_container_width=True)
