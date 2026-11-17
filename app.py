@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import timedelta
 from scipy.signal import butter, filtfilt, stft
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -8,17 +9,65 @@ from plotly.subplots import make_subplots
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Monitor Sísmico IoT - Análisis DSP",
-    page_icon="🌋",
     layout="wide"
 )
 
-st.title("🌋 Estación de Análisis Sísmico IoT (ESP32 + MPU-6050)")
+# --- MODO OSCURO / CLARO ---
+if "modo_oscuro" not in st.session_state:
+    st.session_state.modo_oscuro = True  # oscuro por defecto
+
+with st.sidebar:
+    st.toggle("Modo oscuro", key="modo_oscuro")
+    st.divider()
+
+MODO_OSCURO = st.session_state.modo_oscuro
+
+if MODO_OSCURO:
+    COLOR_FONDO = "#0e1117"
+    COLOR_TEXTO = "#fafafa"
+    COLOR_TARJETA = "#1c1f26"
+    COLOR_BORDE = "#30333d"
+    COLOR_RESULTANTE = "#00e5ff"  # cian brillante -> visible sobre fondo oscuro
+    PLOTLY_TEMPLATE = "plotly_dark"
+else:
+    COLOR_FONDO = "#ffffff"
+    COLOR_TEXTO = "#111111"
+    COLOR_TARJETA = "#f0f2f6"
+    COLOR_BORDE = "#d8dce3"
+    COLOR_RESULTANTE = "#111111"  # negro -> visible sobre fondo claro
+    PLOTLY_TEMPLATE = "plotly_white"
+
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background-color: {COLOR_FONDO};
+        color: {COLOR_TEXTO};
+    }}
+    [data-testid="stSidebar"] {{
+        background-color: {COLOR_TARJETA};
+        border-right: 1px solid {COLOR_BORDE};
+    }}
+    [data-testid="stMetric"] {{
+        background-color: {COLOR_TARJETA};
+        border: 1px solid {COLOR_BORDE};
+        padding: 12px;
+        border-radius: 10px;
+    }}
+    [data-testid="stMetricLabel"], [data-testid="stMetricValue"], [data-testid="stMetricDelta"] {{
+        color: {COLOR_TEXTO} !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title("Estación de Análisis Sísmico IoT (ESP32 + MPU-6050)")
 st.markdown(
     "Plataforma de procesamiento digital de señales (DSP) para caracterización estructural, "
     "filtrado pasa-altos de gravedad ($1g$), análisis espectral **rFFT triaxial** y **espectrogramas STFT**."
 )
 
-# --- FUNCIONES DE PROCESAMIENTO DSP ---
 def filtro_pasa_altos(datos: np.ndarray, cutoff_hz: float, fs: float, orden: int = 4) -> np.ndarray:
     if cutoff_hz <= 0 or len(datos) <= orden * 3:
         return datos - np.mean(datos)
@@ -41,7 +90,13 @@ def calcular_rfft_triaxial(ax: np.ndarray, ay: np.ndarray, az: np.ndarray, fs: f
     amp_total = np.sqrt(fft_x**2 + fft_y**2 + fft_z**2)
     return freqs, fft_x, fft_y, fft_z, amp_total
 
-# --- BARRA LATERAL: CARGA Y PARÁMETROS ---
+def formatear_hms(segundos: float) -> str:
+    total_seg = int(round(segundos))
+    horas = total_seg // 3600
+    minutos = (total_seg % 3600) // 60
+    segs = total_seg % 60
+    return f"{horas:02d}:{minutos:02d}:{segs:02d}"
+
 with st.sidebar:
     st.header("1. Cargar Registro CSV")
     archivo = st.file_uploader(
@@ -66,9 +121,8 @@ with st.sidebar:
     banda_sismica = st.slider("Banda de interés sísmico (Hz)", 0.5, 25.0, (1.0, 10.0), 0.5)
     nperseg_stft = st.select_slider("Ventana STFT (muestras)", options=[64, 128, 256, 512], value=128)
 
-# --- CUERPO PRINCIPAL ---
 if archivo is None:
-    st.info("👈 Sube un archivo `.csv` en el panel izquierdo para comenzar el análisis (ej. `datos_arduino_20261116_190348.csv`).")
+    st.info("Sube un archivo `.csv` en el panel izquierdo para comenzar el análisis (ej. `datos_arduino_20261116_190348.csv`).")
     st.stop()
 
 try:
@@ -81,7 +135,6 @@ except Exception as e:
     st.error(f"Error al leer el archivo CSV: {e}")
     st.stop()
 
-# Reconstrucción temporal y auditoría de paquetes
 df = df.sort_values("seq").reset_index(drop=True)
 t_seg_total = (df["timestamp_ms"].values - df["timestamp_ms"].values[0]) / 1000.0
 dt_medio = np.median(np.diff(t_seg_total)) if len(t_seg_total) > 1 else 0.01
@@ -91,15 +144,49 @@ saltos = np.diff(df["seq"].values)
 perdidas = int(np.sum(saltos[saltos > 1] - 1))
 integridad = (len(df) / (len(df) + perdidas)) * 100.0
 
-# --- SELECTOR DE INTERVALO DE TIEMPO ---
-st.subheader("⏱️ Selección de Intervalo Temporal")
-duracion_total = float(t_seg_total[-1])
+# --- SELECTOR DE INTERVALO TEMPORAL (SEGUNDOS Y HH:MM:SS SINCRONIZADOS) ---
+st.subheader("Selección de Intervalo Temporal")
+duracion_total = max(float(t_seg_total[-1]), 0.1)
+
+# Reiniciar rango si se carga un archivo distinto o si excede la duración actual
+if st.session_state.get("archivo_actual") != archivo.name:
+    st.session_state["archivo_actual"] = archivo.name
+    st.session_state["rango_seg"] = (0.0, duracion_total)
+    st.session_state["rango_hms"] = (timedelta(seconds=0), timedelta(seconds=int(round(duracion_total))))
+
+def sincronizar_desde_segundos():
+    ini, fin = st.session_state["rango_seg"]
+    st.session_state["rango_hms"] = (timedelta(seconds=int(round(ini))), timedelta(seconds=int(round(fin))))
+
+def sincronizar_desde_hms():
+    td_ini, td_fin = st.session_state["rango_hms"]
+    ini = min(float(td_ini.total_seconds()), duracion_total)
+    fin = min(float(td_fin.total_seconds()), duracion_total)
+    st.session_state["rango_seg"] = (ini, fin)
+
 rango_t = st.slider(
-    "Selecciona el rango de tiempo a analizar (segundos desde el inicio):",
+    "Rango de tiempo en segundos desde el inicio:",
     min_value=0.0,
-    max_value=max(duracion_total, 0.1),
-    value=(0.0, max(duracion_total, 0.1)),
-    step=0.1
+    max_value=duracion_total,
+    step=0.1,
+    key="rango_seg",
+    on_change=sincronizar_desde_segundos
+)
+
+max_td = timedelta(seconds=max(int(round(duracion_total)), 1))
+rango_hms = st.slider(
+    "Rango de tiempo en formato Horas:Minutos:Segundos (HH:MM:SS):",
+    min_value=timedelta(seconds=0),
+    max_value=max_td,
+    step=timedelta(seconds=1),
+    format="HH:mm:ss",
+    key="rango_hms",
+    on_change=sincronizar_desde_hms
+)
+
+st.caption(
+    f"Tramo seleccionado: {formatear_hms(rango_t[0])} a {formatear_hms(rango_t[1])} "
+    f"({rango_t[0]:.1f} s – {rango_t[1]:.1f} s | Duración: {rango_t[1] - rango_t[0]:.1f} s)"
 )
 
 mascara = (t_seg_total >= rango_t[0]) & (t_seg_total <= rango_t[1])
@@ -158,10 +245,10 @@ c5.metric("Energía en Banda Sísmica", f"{fraccion_energia:.1f} %", "Ratio E_ba
 
 # --- PESTAÑAS DE VISUALIZACIÓN ---
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📈 Ondas en el Tiempo",
-    "📊 Espectro rFFT Triaxial",
-    "🔥 Espectrograma (STFT)",
-    "📋 Datos y Resumen"
+    "Ondas en el Tiempo",
+    "Espectro rFFT Triaxial",
+    "Espectrograma (STFT)",
+    "Datos y Resumen"
 ])
 
 with tab1:
@@ -170,9 +257,9 @@ with tab1:
         subplot_titles=("Eje X (Horizontal)", "Eje Y (Horizontal)", "Eje Z (Vertical / Inclinado)"),
         vertical_spacing=0.07
     )
-    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=ax_vis, name="Ax", line=dict(color="#38bdf8", width=1.2)), row=1, col=1)
-    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=ay_vis, name="Ay", line=dict(color="#4ade80", width=1.2)), row=2, col=1)
-    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=az_vis, name="Az", line=dict(color="#f87171", width=1.2)), row=3, col=1)
+    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=ax_vis, name="Ax", line=dict(color="#1f77b4", width=1.2)), row=1, col=1)
+    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=ay_vis, name="Ay", line=dict(color="#2ca02c", width=1.2)), row=2, col=1)
+    fig_tiempo.add_trace(go.Scatter(x=t_sub, y=az_vis, name="Az", line=dict(color="#d62728", width=1.2)), row=3, col=1)
 
     tipo_eje_y = "log" if "dB" in unidad else "linear"
     if "dB" in unidad:
@@ -182,7 +269,11 @@ with tab1:
 
     fig_tiempo.update_yaxes(title_text=etiqueta_y, type=tipo_eje_y)
     fig_tiempo.update_xaxes(title_text="Tiempo (s)", row=3, col=1)
-    fig_tiempo.update_layout(height=620, showlegend=False, margin=dict(t=40, b=30))
+    fig_tiempo.update_layout(
+        height=620, showlegend=False, margin=dict(t=40, b=30),
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
+    )
     st.plotly_chart(fig_tiempo, use_container_width=True)
 
 with tab2:
@@ -193,42 +284,14 @@ with tab2:
     escala_fz = 20 * np.log10(fz + 1e-6) if "dB" in unidad else fz * factor_unidad
     y_fft_label = "Magnitud (dB)" if "dB" in unidad else f"Amplitud ({etiqueta_y})"
 
-    # --- DESLIZANTE DE ESCALA VERTICAL (AMPLITUD) ---
-    col_auto, col_slider_y = st.columns([1, 4])
-    with col_auto:
-        auto_escala_y = st.checkbox("Auto-escala Y", value=True)
-    with col_slider_y:
-        if "dB" in unidad:
-            rango_db = st.slider(
-                "Rango vertical de Magnitud (dB):",
-                min_value=-120.0, max_value=40.0, value=(-100.0, 10.0), step=5.0,
-                disabled=auto_escala_y
-            )
-            rango_y_config = list(rango_db) if not auto_escala_y else None
-        else:
-            max_actual = float(np.max(escala_fft)) if len(escala_fft) > 0 else 0.05
-            techo_slider = max(round(max_actual * 2.5, 4), 0.01 * factor_unidad)
-            paso_slider = round(techo_slider / 200.0, 5)
-            valor_defecto = max(round(max_actual * 1.15, 4), paso_slider)
-
-            limite_y = st.slider(
-                f"Tope máximo de Amplitud ({etiqueta_y}):",
-                min_value=paso_slider,
-                max_value=techo_slider,
-                value=min(valor_defecto, techo_slider),
-                step=paso_slider,
-                disabled=auto_escala_y
-            )
-            rango_y_config = [0.0, limite_y] if not auto_escala_y else None
-
-    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fft, name="Resultante Espectral √(|X|²+|Y|²+|Z|²)", line=dict(color="#FFD700", width=2.5)))
-    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fx, name="Eje X", line=dict(color="#38bdf8", width=1, dash="dot"), opacity=0.75))
-    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fy, name="Eje Y", line=dict(color="#4ade80", width=1, dash="dot"), opacity=0.75))
-    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fz, name="Eje Z", line=dict(color="#f87171", width=1, dash="dot"), opacity=0.75))
+    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fft, name="Resultante Espectral √(|X|²+|Y|²+|Z|²)", line=dict(color=COLOR_RESULTANTE, width=2.5)))
+    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fx, name="Eje X", line=dict(color="#1f77b4", width=1, dash="dot")))
+    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fy, name="Eje Y", line=dict(color="#2ca02c", width=1, dash="dot")))
+    fig_fft.add_trace(go.Scatter(x=freqs, y=escala_fz, name="Eje Z", line=dict(color="#d62728", width=1, dash="dot")))
 
     fig_fft.add_vrect(
         x0=banda_sismica[0], x1=banda_sismica[1],
-        fillcolor="orange", opacity=0.12, line_width=0,
+        fillcolor="orange", opacity=0.15, line_width=0,
         annotation_text="Banda Sísmica", annotation_position="top left"
     )
     fig_fft.update_layout(
@@ -236,8 +299,9 @@ with tab2:
         xaxis_title="Frecuencia (Hz)",
         yaxis_title=y_fft_label,
         xaxis=dict(range=[0, min(25, fs_real / 2)]),
-        yaxis=dict(range=rango_y_config) if rango_y_config else {},
-        height=480
+        height=480,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
     )
     st.plotly_chart(fig_fft, use_container_width=True)
 
@@ -265,7 +329,9 @@ with tab3:
         xaxis_title="Tiempo (s)",
         yaxis_title="Frecuencia (Hz)",
         yaxis=dict(range=[0, min(25, fs_real / 2)]),
-        height=500
+        height=500,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
     )
     st.plotly_chart(fig_spec, use_container_width=True)
 
