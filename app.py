@@ -89,6 +89,44 @@ def calcular_rfft_triaxial(ax: np.ndarray, ay: np.ndarray, az: np.ndarray, fs: f
     amp_total = np.sqrt(fft_x**2 + fft_y**2 + fft_z**2)
     return freqs, fft_x, fft_y, fft_z, amp_total
 
+def calcular_amplitud_espectral_tiempo(
+    ax: np.ndarray, ay: np.ndarray, az: np.ndarray, fs: float,
+    ventana_seg: float, banda_hz: tuple[float, float]
+):
+    nperseg = max(int(round(ventana_seg * fs)), 16)
+    nperseg = min(nperseg, len(ax))
+    noverlap = int(nperseg * 0.75)  # 75% de solapamiento para curva suave en el tiempo
+
+    f_win, t_win, Zxx_x = stft(
+        ax, fs=fs, window="hamming", nperseg=nperseg,
+        noverlap=noverlap, scaling="spectrum", boundary=None
+    )
+    _, _, Zxx_y = stft(
+        ay, fs=fs, window="hamming", nperseg=nperseg,
+        noverlap=noverlap, scaling="spectrum", boundary=None
+    )
+    _, _, Zxx_z = stft(
+        az, fs=fs, window="hamming", nperseg=nperseg,
+        noverlap=noverlap, scaling="spectrum", boundary=None
+    )
+
+    # Factor 2.0 para amplitud unilateral (equivalente a rFFT)
+    amp_x = 2.0 * np.abs(Zxx_x)
+    amp_y = 2.0 * np.abs(Zxx_y)
+    amp_z = 2.0 * np.abs(Zxx_z)
+    amp_triaxial = np.sqrt(amp_x**2 + amp_y**2 + amp_z**2)
+
+    mask_f = (f_win >= banda_hz[0]) & (f_win <= banda_hz[1])
+    if not np.any(mask_f):
+        mask_f = f_win > 0
+
+    serie_total = np.max(amp_triaxial[mask_f, :], axis=0)
+    serie_x = np.max(amp_x[mask_f, :], axis=0)
+    serie_y = np.max(amp_y[mask_f, :], axis=0)
+    serie_z = np.max(amp_z[mask_f, :], axis=0)
+
+    return t_win, serie_x, serie_y, serie_z, serie_total
+
 def formatear_hms(segundos: float) -> str:
     total_seg = int(round(segundos))
     horas = total_seg // 3600
@@ -338,7 +376,6 @@ with tab2:
     else:
         max_fijo_global = 0.50 * factor_unidad
         paso_fijo = 0.005 * factor_unidad
-        defecto_fijo = 0.05 * factor_unidad  # fijo en 0.05 m/s² (o 5.0 Gal)
 
         if "tope_y_fft_base" not in st.session_state:
             st.session_state["tope_y_fft_base"] = 0.05
@@ -392,11 +429,82 @@ with tab2:
         yaxis_title=y_fft_label,
         xaxis=dict(range=[0, min(25, fs_real / 2)]),
         yaxis=dict(range=rango_y_config) if rango_y_config else {},
-        height=480,
+        height=440,
         template=PLOTLY_TEMPLATE,
         paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
     )
     st.plotly_chart(fig_fft, use_container_width=True)
+
+    # --- SEGUNDA GRÁFICA: AMPLITUD ESPECTRAL VS TIEMPO (VENTANA DESLIZANTE) ---
+    st.divider()
+    st.subheader("Evolución Temporal de la Amplitud Espectral (Ventana Deslizante)")
+
+    duracion_tramo = max(float(t_sub[-1] - t_sub[0]), 0.5)
+    max_ventana_seg = min(10.0, max(round(duracion_tramo * 0.5, 1), 0.5))
+    defecto_ventana = min(2.0, max_ventana_seg)
+
+    col_win, col_umbral = st.columns([3, 1.5])
+    with col_win:
+        ventana_fft_seg = st.slider(
+            "Tamaño de ventana temporal para calcular la FFT (segundos):",
+            min_value=0.2,
+            max_value=max_ventana_seg,
+            value=defecto_ventana,
+            step=0.1,
+            help="Cada punto muestra la amplitud espectral pico dentro de la banda sísmica calculada sobre esta ventana deslizante."
+        )
+    with col_umbral:
+        mostrar_umbral = st.checkbox("Mostrar línea de umbral (0.03 m/s²)", value=True)
+
+    t_win, sx_t, sy_t, sz_t, stotal_t = calcular_amplitud_espectral_tiempo(
+        ax_din, ay_din, az_din, fs_real, ventana_fft_seg, banda_sismica
+    )
+    t_win_real = t_win + t_sub[0]
+
+    escala_t_total = 20 * np.log10(stotal_t + 1e-6) if "dB" in unidad else stotal_t * factor_unidad
+    escala_t_x = 20 * np.log10(sx_t + 1e-6) if "dB" in unidad else sx_t * factor_unidad
+    escala_t_y = 20 * np.log10(sy_t + 1e-6) if "dB" in unidad else sy_t * factor_unidad
+    escala_t_z = 20 * np.log10(sz_t + 1e-6) if "dB" in unidad else sz_t * factor_unidad
+
+    fig_fft_tiempo = go.Figure()
+    fig_fft_tiempo.add_trace(go.Scatter(
+        x=t_win_real, y=escala_t_total,
+        name="Resultante Espectral √(|X|²+|Y|²+|Z|²)",
+        line=dict(color=COLOR_RESULTANTE, width=2.5)
+    ))
+    fig_fft_tiempo.add_trace(go.Scatter(
+        x=t_win_real, y=escala_t_x,
+        name="Eje X", line=dict(color="#1f77b4", width=1, dash="dot")
+    ))
+    fig_fft_tiempo.add_trace(go.Scatter(
+        x=t_win_real, y=escala_t_y,
+        name="Eje Y", line=dict(color="#2ca02c", width=1, dash="dot")
+    ))
+    fig_fft_tiempo.add_trace(go.Scatter(
+        x=t_win_real, y=escala_t_z,
+        name="Eje Z", line=dict(color="#d62728", width=1, dash="dot")
+    ))
+
+    if mostrar_umbral:
+        umbral_val = 20 * np.log10(0.03) if "dB" in unidad else 0.03 * factor_unidad
+        fig_fft_tiempo.add_hline(
+            y=umbral_val,
+            line_dash="dash",
+            line_color="#ff9800",
+            annotation_text=f"Umbral referencia ({0.03 * factor_unidad:.2f} {etiqueta_y})",
+            annotation_position="top right"
+        )
+
+    fig_fft_tiempo.update_layout(
+        title=f"Amplitud Espectral Máxima en Banda {banda_sismica[0]}–{banda_sismica[1]} Hz vs. Tiempo (Ventana: {ventana_fft_seg:.1f} s)",
+        xaxis_title="Tiempo (s)",
+        yaxis_title=y_fft_label,
+        yaxis=dict(range=rango_y_config) if rango_y_config else {},
+        height=440,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=COLOR_FONDO, plot_bgcolor=COLOR_FONDO
+    )
+    st.plotly_chart(fig_fft_tiempo, use_container_width=True)
 
 with tab3:
     nperseg = min(nperseg_stft, len(ax_din))
